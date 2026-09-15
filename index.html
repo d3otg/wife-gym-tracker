@@ -725,6 +725,1835 @@
 
   const DEFAULT_PROGRAMME = {
     0: { session: 'Rest', type: 'rest', exercises: [] },
+    1: { session: 'Squat & Push', type: 'train', exercises: [
+        { name: 'Back Squat', target: '4 x 6-8' },
+        { name: 'Flat Dumbbell Bench Press', target: '3 x 8-10' },
+        { name: 'Seated Cable Row', target: '3 x 10-12' },
+        { name: 'Walking Lunges', target: '3 x 10/leg' },
+        { name: 'Plank', target: '3 x 30-45s' },
+    ]},
+    2: { session: 'Spin Class', type: 'train', exercises: [
+        { name: 'Spin Class', target: '~380 kcal' },
+    ]},
+    3: { session: 'Hinge & Pull', type: 'train', exercises: [
+        { name: 'Romanian Deadlift', target: '4 x 6-8' },
+        { name: 'Lat Pulldown', target: '3 x 10-12' },
+        { name: 'Standing DB Shoulder Press', target: '3 x 8-10' },
+        { name: 'Hip Thrust', target: '3 x 10-12' },
+        { name: 'Cable Woodchop', target: '3 x 12/side' },
+    ]},
+    4: { session: 'Spin Class', type: 'train', exercises: [
+        { name: 'Spin Class', target: '~380 kcal' },
+    ]},
+    5: { session: 'Unilateral & Conditioning', type: 'train', exercises: [
+        { name: 'Bulgarian Split Squat', target: '3 x 8-10/leg' },
+        { name: 'Incline Dumbbell Press', target: '3 x 8-10' },
+        { name: 'Single-Arm DB Row', target: '3 x 10/side' },
+        { name: 'Leg Press', target: '3 x 12-15' },
+    ]},
+    6: { session: 'Rest', type: 'rest', exercises: [] },
+  };
+
+  let state = {
+    view: 'today',
+    programme: DEFAULT_PROGRAMME,
+    logs: [],           // {id, dateISO, dayIdx, exerciseName, sets:[{weight,reps}]}
+    bodyLogs: [],        // {dateISO, weight, calories, steps} — one entry per day, each field optional
+    goalWeight: null,    // single persistent target, not a per-day log
+    draftGoal: null,     // string while editing the goal weight field
+    calorieTarget: 2000, // single persistent daily calorie target \u2014 seeded from her coaching plan
+    draftCalorieTarget: null,
+    stepGoal: 12000,     // single persistent daily step goal \u2014 seeded from her coaching plan
+    draftStepGoal: null,
+    openExercise: null,
+    draftSets: {},       // exerciseName -> [{weight,reps}] while editing today
+    draftBody: null,     // {weight, calories, steps} while editing today's body entry
+    progressPick: null,
+    loaded: false,
+  };
+
+  const todayIdx = new Date().getDay();
+  const todayISO = new Date().toISOString().slice(0,10);
+
+  // ---------------- STORAGE ----------------
+  async function loadAll() {
+    try {
+      const prog = await window.storage.get('programme', false);
+      if (prog && prog.value) state.programme = JSON.parse(prog.value);
+    } catch(e) {}
+    try {
+      const logs = await window.storage.get('logs', false);
+      if (logs && logs.value) state.logs = JSON.parse(logs.value);
+    } catch(e) {}
+    try {
+      const body = await window.storage.get('bodyLogs', false);
+      if (body && body.value) state.bodyLogs = JSON.parse(body.value);
+    } catch(e) {}
+    try {
+      const goal = await window.storage.get('goalWeight', false);
+      if (goal && goal.value) state.goalWeight = JSON.parse(goal.value);
+    } catch(e) {}
+    try {
+      const calTarget = await window.storage.get('calorieTarget', false);
+      if (calTarget && calTarget.value) state.calorieTarget = JSON.parse(calTarget.value);
+    } catch(e) {}
+    try {
+      const stepGoal = await window.storage.get('stepGoal', false);
+      if (stepGoal && stepGoal.value) state.stepGoal = JSON.parse(stepGoal.value);
+    } catch(e) {}
+    state.loaded = true;
+    render();
+  }
+
+  async function saveProgramme() {
+    try { await window.storage.set('programme', JSON.stringify(state.programme), false); }
+    catch(e) { console.error('save programme failed', e); }
+  }
+
+  async function saveBodyLogs() {
+    try { await window.storage.set('bodyLogs', JSON.stringify(state.bodyLogs), false); }
+    catch(e) { console.error('save bodyLogs failed', e); }
+  }
+
+  async function saveGoalWeight() {
+    try { await window.storage.set('goalWeight', JSON.stringify(state.goalWeight), false); }
+    catch(e) { console.error('save goalWeight failed', e); }
+  }
+
+  async function saveCalorieTarget() {
+    try { await window.storage.set('calorieTarget', JSON.stringify(state.calorieTarget), false); }
+    catch(e) { console.error('save calorieTarget failed', e); }
+  }
+
+  async function saveStepGoal() {
+    try { await window.storage.set('stepGoal', JSON.stringify(state.stepGoal), false); }
+    catch(e) { console.error('save stepGoal failed', e); }
+  }
+
+  async function saveLogs() {
+    try { await window.storage.set('logs', JSON.stringify(state.logs), false); }
+    catch(e) { console.error('save logs failed', e); }
+  }
+
+  // ---------------- HELPERS ----------------
+  // Escape a value for safe use inside an HTML attribute (double-quoted).
+  // Everything dynamic (exercise names, etc.) goes through this before
+  // being written into a data-* attribute — never interpolate raw text
+  // or JSON.stringify output directly into an HTML attribute string.
+  function escAttr(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function getLastLog(exerciseName) {
+    const matches = state.logs.filter(l => l.exerciseName === exerciseName);
+    if (!matches.length) return null;
+    return matches.sort((a,b) => b.dateISO.localeCompare(a.dateISO))[0];
+  }
+
+  function getTodayLog(exerciseName) {
+    return state.logs.find(l => l.exerciseName === exerciseName && l.dateISO === todayISO);
+  }
+
+  function topWeight(setsArr) {
+    if (!setsArr || !setsArr.length) return 0;
+    return Math.max(...setsArr.map(s => Number(s.weight) || 0));
+  }
+
+  function getPR(exerciseName) {
+    const matches = state.logs.filter(l => l.exerciseName === exerciseName);
+    if (!matches.length) return null;
+    let best = 0, bestDate = null;
+    matches.forEach(l => {
+      const w = topWeight(l.sets);
+      if (w > best) { best = w; bestDate = l.dateISO; }
+    });
+    return { weight: best, date: bestDate };
+  }
+
+  function fmtDate(iso) {
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  }
+
+  // Monday-start week key, e.g. logs on any day Mon–Sun of the same week
+  // bucket together. Used to build the weekly consistency chart.
+  function weekKey(iso) {
+    const d = new Date(iso + 'T00:00:00');
+    const day = d.getDay(); // 0 Sun .. 6 Sat
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() + diffToMonday);
+    return monday.toISOString().slice(0, 10);
+  }
+
+  function weekLabel(mondayISO) {
+    const d = new Date(mondayISO + 'T00:00:00');
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  }
+
+  // Last N week buckets (Monday keys), oldest first, ending with the
+  // current week — even weeks with zero logs are included so gaps show.
+  function lastNWeeks(n) {
+    const weeks = [];
+    const today = new Date();
+    const day = today.getDay();
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    const thisMonday = new Date(today);
+    thisMonday.setDate(today.getDate() + diffToMonday);
+    for (let i = n - 1; i >= 0; i--) {
+      const m = new Date(thisMonday);
+      m.setDate(thisMonday.getDate() - i * 7);
+      weeks.push(m.toISOString().slice(0, 10));
+    }
+    return weeks;
+  }
+
+  // Distinct training days (days with at least one logged exercise) per week.
+  function trainingDaysInWeek(mondayISO) {
+    const days = new Set();
+    state.logs.forEach(l => { if (weekKey(l.dateISO) === mondayISO) days.add(l.dateISO); });
+    return days.size;
+  }
+
+  // How many days THIS week are actually programmed as training days
+  // (excludes rest/optional days) — the denominator for "sessions done".
+  function programmedTrainingDaysCount() {
+    return Object.values(state.programme).filter(d => d.type === 'train').length;
+  }
+
+  // Weekly summary: sessions done vs programmed, average calories, and
+  // weight change, all scoped to the current Mon–Sun week.
+  function getWeekSummary() {
+    const thisMonday = weekKey(todayISO);
+    const daysDone = trainingDaysInWeek(thisMonday);
+    const daysPlanned = programmedTrainingDaysCount();
+
+    const weekCalorieLogs = state.bodyLogs.filter(b => weekKey(b.dateISO) === thisMonday && b.calories != null);
+    const avgCalories = weekCalorieLogs.length
+      ? Math.round(weekCalorieLogs.reduce((sum, b) => sum + b.calories, 0) / weekCalorieLogs.length)
+      : null;
+
+    // Weight change: earliest vs latest weight entry within the last 7 days.
+    const cutoff = new Date(todayISO + 'T00:00:00');
+    cutoff.setDate(cutoff.getDate() - 7);
+    const recentWeights = state.bodyLogs
+      .filter(b => b.weight != null && new Date(b.dateISO + 'T00:00:00') >= cutoff)
+      .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+    const weekWeightChange = recentWeights.length >= 2
+      ? +(recentWeights[recentWeights.length-1].weight - recentWeights[0].weight).toFixed(1)
+      : null;
+
+    // Step goal days: how many days this week had steps logged >= the goal.
+    const weekStepLogs = state.bodyLogs.filter(b => weekKey(b.dateISO) === thisMonday && b.steps != null);
+    const stepGoalDaysHit = state.stepGoal != null
+      ? weekStepLogs.filter(b => b.steps >= state.stepGoal).length
+      : null;
+    const stepDaysLogged = weekStepLogs.length;
+
+    return { daysDone, daysPlanned, avgCalories, weekWeightChange, stepGoalDaysHit, stepDaysLogged };
+  }
+
+  // ---------------- BODY LOG HELPERS ----------------
+  function getBodyLogsSorted() {
+    return [...state.bodyLogs].sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+  }
+
+  function getTodayBodyLog() {
+    return state.bodyLogs.find(b => b.dateISO === todayISO);
+  }
+
+  function toast(msg) {
+    const t = document.getElementById('tr-toast');
+    t.textContent = msg;
+    t.classList.add('tr-show');
+    clearTimeout(window._trToastTimer);
+    window._trToastTimer = setTimeout(() => t.classList.remove('tr-show'), 1600);
+  }
+
+  // ---------------- ACTIONS ----------------
+  function openExercise(name) {
+    state.openExercise = state.openExercise === name ? null : name;
+    if (state.openExercise && !state.draftSets[name]) {
+      const todayLog = getTodayLog(name);
+      if (todayLog) {
+        state.draftSets[name] = todayLog.sets.map(s => ({...s}));
+      } else {
+        const last = getLastLog(name);
+        const seedSets = last ? last.sets.map(s => ({weight: s.weight, reps: ''})) : [{weight:'', reps:''}];
+        state.draftSets[name] = seedSets;
+      }
+    }
+    render();
+  }
+
+  function updateSet(name, idx, field, delta) {
+    const sets = state.draftSets[name];
+    if (!sets[idx]) return;
+    const cur = Number(sets[idx][field]) || 0;
+    const step = field === 'weight' ? 2.5 : 1;
+    sets[idx][field] = Math.max(0, cur + delta * step);
+    render();
+  }
+
+  // Direct typing into a set field must NOT trigger a full re-render —
+  // replacing innerHTML while an input is focused kills the keyboard/cursor
+  // on real phones. Just update state silently; the input already shows
+  // what was typed since the browser owns that DOM node until the next render.
+  function typeSet(name, idx, field, val) {
+    const sets = state.draftSets[name];
+    if (!sets[idx]) return;
+    sets[idx][field] = val;
+  }
+
+  function addSet(name) {
+    const sets = state.draftSets[name];
+    const last = sets[sets.length - 1];
+    sets.push({ weight: last ? last.weight : '', reps: last ? last.reps : '' });
+    render();
+  }
+
+  function delSet(name, idx) {
+    const sets = state.draftSets[name];
+    if (sets.length <= 1) return;
+    sets.splice(idx, 1);
+    render();
+  }
+
+  async function saveExercise(name) {
+    const sets = state.draftSets[name].filter(s => s.weight !== '' || s.reps !== '');
+    if (!sets.length) return;
+    const cleaned = sets.map(s => ({ weight: Number(s.weight)||0, reps: Number(s.reps)||0 }));
+    const existingIdx = state.logs.findIndex(l => l.exerciseName === name && l.dateISO === todayISO);
+    const entry = { id: (existingIdx>=0 ? state.logs[existingIdx].id : 'l'+Date.now()), dateISO: todayISO, dayIdx: todayIdx, exerciseName: name, sets: cleaned };
+    if (existingIdx >= 0) state.logs[existingIdx] = entry;
+    else state.logs.push(entry);
+    await saveLogs();
+    state.openExercise = null;
+    render();
+    toast('Saved · ' + name);
+  }
+
+  // Body log (weight/calories/steps) editing follows the same pattern as set
+  // editing: typing updates a draft silently (no render, keeps focus),
+  // Save persists it and re-renders.
+  function typeBody(field, val) {
+    if (!state.draftBody) state.draftBody = { weight: '', calories: '', steps: '' };
+    state.draftBody[field] = val;
+  }
+
+  async function saveBodyLog() {
+    if (!state.draftBody) return;
+    const weight = state.draftBody.weight === '' ? null : Number(state.draftBody.weight) || null;
+    const calories = state.draftBody.calories === '' ? null : Number(state.draftBody.calories) || null;
+    const steps = state.draftBody.steps === '' ? null : Number(state.draftBody.steps) || null;
+    if (weight === null && calories === null && steps === null) return;
+    const existing = getTodayBodyLog();
+    if (existing) {
+      if (weight !== null) existing.weight = weight;
+      if (calories !== null) existing.calories = calories;
+      if (steps !== null) existing.steps = steps;
+    } else {
+      state.bodyLogs.push({ dateISO: todayISO, weight, calories, steps });
+    }
+    await saveBodyLogs();
+    render();
+    toast('Saved today\u2019s numbers');
+  }
+
+  function typeGoal(val) {
+    state.draftGoal = val;
+  }
+
+  async function saveGoal() {
+    if (state.draftGoal === null || state.draftGoal === '') return;
+    const val = Number(state.draftGoal);
+    if (!val || val <= 0) return;
+    state.goalWeight = val;
+    await saveGoalWeight();
+    render();
+    toast('Goal weight saved');
+  }
+
+  function typeCalorieTarget(val) {
+    state.draftCalorieTarget = val;
+  }
+
+  async function saveCalTarget() {
+    if (state.draftCalorieTarget === null || state.draftCalorieTarget === '') return;
+    const val = Number(state.draftCalorieTarget);
+    if (!val || val <= 0) return;
+    state.calorieTarget = val;
+    await saveCalorieTarget();
+    render();
+    toast('Calorie target saved');
+  }
+
+  function typeStepGoal(val) {
+    state.draftStepGoal = val;
+  }
+
+  async function saveStepGoalTarget() {
+    if (state.draftStepGoal === null || state.draftStepGoal === '') return;
+    const val = Number(state.draftStepGoal);
+    if (!val || val <= 0) return;
+    state.stepGoal = val;
+    await saveStepGoal();
+    render();
+    toast('Step goal saved');
+  }
+
+  function setView(v) {
+    state.view = v;
+    state.openExercise = null;
+    if (v === 'dashboard' && !state.progressPick) {
+      const allNames = new Set();
+      Object.values(state.programme).forEach(d => d.exercises.forEach(e => { if (!e.target.includes('min')) allNames.add(e.name); }));
+      state.progressPick = [...allNames][0] || null;
+    }
+    if (v === 'dashboard' && !state.draftBody) {
+      const today = getTodayBodyLog();
+      state.draftBody = {
+        weight: today && today.weight != null ? today.weight : '',
+        calories: today && today.calories != null ? today.calories : '',
+        steps: today && today.steps != null ? today.steps : '',
+      };
+    }
+    if (v === 'dashboard' && state.draftGoal === null) {
+      state.draftGoal = state.goalWeight != null ? String(state.goalWeight) : '';
+    }
+    if (v === 'dashboard' && state.draftCalorieTarget === null) {
+      state.draftCalorieTarget = state.calorieTarget != null ? String(state.calorieTarget) : '';
+    }
+    if (v === 'dashboard' && state.draftStepGoal === null) {
+      state.draftStepGoal = state.stepGoal != null ? String(state.stepGoal) : '';
+    }
+    render();
+  }
+
+  // ---------------- ICONS ----------------
+  const ICONS = {
+    today: '<svg class="tr-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>',
+    programme: '<svg class="tr-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+    dashboard: '<svg class="tr-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 9l-5 5-3-3-4 4"/></svg>',
+    history: '<svg class="tr-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+  };
+
+  // ---------------- RENDER: TODAY ----------------
+  function renderToday() {
+    const day = state.programme[todayIdx];
+    const dateStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+
+    let tagClass = '', tagText = 'TRAINING';
+    if (day.type === 'rest') { tagClass = 'tr-rest'; tagText = 'REST DAY'; }
+    if (day.type === 'game') { tagClass = 'tr-game'; tagText = 'MATCH DAY'; }
+
+    let html = `
+      <div class="tr-topbar">
+        <span class="tr-week">THIS WEEK</span>
+        <span class="tr-date">${dateStr}</span>
+      </div>
+      <div class="tr-hero">
+        <span class="tr-hero-tag ${tagClass}">${tagText}</span>
+        <h1 class="tr-display">${day.session}</h1>
+        <p class="tr-hero-sub">${day.exercises.length ? day.exercises.length + (day.exercises.length === 1 ? ' exercise programmed' : ' exercises programmed') : (day.type === 'rest' ? 'Recover well.' : 'Not set up yet.')}</p>
+      </div>
+    `;
+
+    if (!day.exercises.length) {
+      html += `<div class="tr-empty-state">
+        <div class="tr-emoji-mark tr-display">—</div>
+        <p>${day.type === 'rest' ? 'Nothing programmed. Use this to recover properly.' : 'This training day hasn\u2019t been set up yet \u2014 add your sessions in the Programme tab.'}</p>
+      </div>`;
+    } else {
+      html += `<div class="tr-ex-list">`;
+      day.exercises.forEach(ex => {
+        const done = !!getTodayLog(ex.name);
+        const last = getLastLog(ex.name);
+        const isOpen = state.openExercise === ex.name;
+        html += `
+          <div class="tr-ex-card">
+            <div class="tr-ex-row" data-action="open-exercise" data-exercise="${escAttr(ex.name)}">
+              <div class="tr-ex-check ${done ? 'tr-done' : ''}"></div>
+              <div class="tr-ex-info">
+                <p class="tr-ex-name">${ex.name}</p>
+                <p class="tr-ex-target">${ex.target}</p>
+              </div>
+              ${last ? `<span class="tr-ex-lastweight">${topWeight(last.sets)}kg</span>` : ''}
+              <span class="tr-ex-chevron ${isOpen ? 'tr-open' : ''}">›</span>
+            </div>
+            ${isOpen ? renderLogPanel(ex.name) : ''}
+          </div>
+        `;
+      });
+      html += `</div>`;
+    }
+    return html;
+  }
+
+  function renderLogPanel(name) {
+    const safeName = escAttr(name);
+    const sets = state.draftSets[name] || [{weight:'',reps:''}];
+    let rows = sets.map((s, i) => `
+      <div class="tr-set-row">
+        <span class="tr-set-num">${i+1}</span>
+        <div class="tr-stepper">
+          <button data-action="step" data-exercise="${safeName}" data-idx="${i}" data-field="weight" data-delta="-1">−</button>
+          <div>
+            <input inputmode="decimal" value="${escAttr(s.weight)}" placeholder="0"
+              data-role="set-input" data-exercise="${safeName}" data-idx="${i}" data-field="weight" />
+            <span class="tr-stepper-label">kg</span>
+          </div>
+          <button data-action="step" data-exercise="${safeName}" data-idx="${i}" data-field="weight" data-delta="1">+</button>
+        </div>
+        <span class="tr-set-x">×</span>
+        <div class="tr-stepper" style="flex: 0.7">
+          <button data-action="step" data-exercise="${safeName}" data-idx="${i}" data-field="reps" data-delta="-1">−</button>
+          <div>
+            <input inputmode="numeric" value="${escAttr(s.reps)}" placeholder="0"
+              data-role="set-input" data-exercise="${safeName}" data-idx="${i}" data-field="reps" />
+            <span class="tr-stepper-label">reps</span>
+          </div>
+          <button data-action="step" data-exercise="${safeName}" data-idx="${i}" data-field="reps" data-delta="1">+</button>
+        </div>
+        <button class="tr-set-del" data-action="del-set" data-exercise="${safeName}" data-idx="${i}">×</button>
+      </div>
+    `).join('');
+
+    return `
+      <div class="tr-log-panel" data-role="log-panel">
+        ${rows}
+        <button class="tr-add-set" data-action="add-set" data-exercise="${safeName}">+ Add set</button>
+        <button class="tr-save-btn" data-action="save-exercise" data-exercise="${safeName}">Save</button>
+      </div>
+    `;
+  }
+
+  // ---------------- RENDER: PROGRAMME ----------------
+  function renderProgramme() {
+    let html = `
+      <div class="tr-topbar">
+        <span class="tr-week">WEEKLY PROGRAMME</span>
+      </div>
+      <div class="tr-hero" style="border-bottom:none; padding-bottom:8px;">
+        <h1 class="tr-display">The Week</h1>
+      </div>
+      <div class="tr-week-list">
+    `;
+    for (let i = 1; i <= 7; i++) {
+      const idx = i % 7;
+      const day = state.programme[idx];
+      const isToday = idx === todayIdx;
+      html += `
+        <div class="tr-day-card ${isToday ? 'tr-today-card' : ''}">
+          <div class="tr-day-head">
+            <span class="tr-day-name tr-display">${DAY_NAMES[idx]}</span>
+            <span class="tr-day-session">${day.session}</span>
+          </div>
+          ${day.exercises.length ? `<div class="tr-day-exlist">${day.exercises.map(e => e.name + ' · ' + e.target).join('<br>')}</div>` : ''}
+        </div>
+      `;
+    }
+    html += `</div>`;
+    return html;
+  }
+
+  // ---------------- RENDER: DASHBOARD ----------------
+  function renderDashboard() {
+    let html = `
+      <div class="tr-topbar">
+        <span class="tr-week">DASHBOARD</span>
+      </div>
+      <div class="tr-hero" style="border-bottom:none; padding-bottom:8px;">
+        <h1 class="tr-display">Your Progress</h1>
+      </div>
+    `;
+
+    // ---- Countdown: pounds lost vs pounds to go, with a motivational nudge ----
+    const bodyLogsForGoal = getBodyLogsSorted();
+    const weightLogsForGoal = bodyLogsForGoal.filter(b => b.weight != null);
+    const latestWForGoal = weightLogsForGoal.length ? weightLogsForGoal[weightLogsForGoal.length-1].weight : null;
+    const firstWForGoal = weightLogsForGoal.length ? weightLogsForGoal[0].weight : null;
+    const goalDraft = state.draftGoal != null ? state.draftGoal : '';
+
+    function motivationalLine(pct, remaining) {
+      if (remaining <= 0) return 'Goal smashed! 🎉';
+      if (pct >= 90) return 'So close now \u2014 final push! 🔥';
+      if (pct >= 75) return 'Almost there \u2014 keep going! 💪';
+      if (pct >= 50) return 'Halfway there \u2014 you\u2019ve got this!';
+      if (pct >= 25) return 'Quarter of the way \u2014 solid progress!';
+      if (pct > 0) return 'Every pound counts \u2014 keep it up!';
+      return 'Let\u2019s get started 💪';
+    }
+
+    html += `<div class="tr-section-title">Countdown</div>`;
+    if (state.goalWeight != null && latestWForGoal != null) {
+      const remaining = +(latestWForGoal - state.goalWeight).toFixed(1);
+      const lost = firstWForGoal != null ? +(firstWForGoal - latestWForGoal).toFixed(1) : 0;
+      let pct = 0;
+      if (firstWForGoal != null && firstWForGoal !== state.goalWeight) {
+        pct = ((firstWForGoal - latestWForGoal) / (firstWForGoal - state.goalWeight)) * 100;
+        pct = Math.max(0, Math.min(100, pct));
+      }
+      html += `
+        <div class="tr-goal-card">
+          <div class="tr-countdown-row">
+            <div class="tr-countdown-stat">
+              <div class="tr-countdown-num tr-display tr-countdown-lost">${lost > 0 ? lost : 0}</div>
+              <div class="tr-goal-label">lbs lost</div>
+            </div>
+            <div class="tr-countdown-stat">
+              <div class="tr-countdown-num tr-display">${remaining > 0 ? remaining : 0}</div>
+              <div class="tr-goal-label">lbs to go</div>
+            </div>
+          </div>
+          <div class="tr-goal-bar-track">
+            <div class="tr-goal-bar-fill" style="width:${pct}%"></div>
+          </div>
+          <div class="tr-countdown-msg">${motivationalLine(pct, remaining)}</div>
+          <div class="tr-goal-editrow">
+            <input inputmode="decimal" value="${escAttr(goalDraft)}" placeholder="Update goal (lbs)"
+              data-role="goal-input" />
+            <button data-action="save-goal">Update</button>
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="tr-goal-card">
+          <div class="tr-goal-label" style="margin-bottom:10px;">Set a goal weight to start the countdown.</div>
+          <div class="tr-goal-editrow">
+            <input inputmode="decimal" value="${escAttr(goalDraft)}" placeholder="Goal weight (lbs)"
+              data-role="goal-input" />
+            <button data-action="save-goal">Save</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // ---- This week: sessions done, avg calories, weight change ----
+    const summary = getWeekSummary();
+    html += `<div class="tr-section-title">This week</div>`;
+    html += `
+      <div class="tr-pr-block">
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${summary.daysDone}/${summary.daysPlanned}</div>
+          <div class="tr-pr-label">Sessions done</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${summary.avgCalories != null ? summary.avgCalories : '—'}</div>
+          <div class="tr-pr-label">Avg calories</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${summary.weekWeightChange != null ? (summary.weekWeightChange > 0 ? '+' : '') + summary.weekWeightChange + 'lbs' : '—'}</div>
+          <div class="tr-pr-label">7-day change</div>
+        </div>
+      </div>
+    `;
+    html += `
+      <div class="tr-pr-block">
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${summary.stepGoalDaysHit != null ? summary.stepGoalDaysHit + '/' + summary.stepDaysLogged : '—'}</div>
+          <div class="tr-pr-label">Step goal hit (of days logged)</div>
+        </div>
+      </div>
+    `;
+
+    // ---- Body & nutrition: today's weight/calories/steps entry + trends ----
+    const draft = state.draftBody || { weight: '', calories: '', steps: '' };
+    const bodyLogs = getBodyLogsSorted();
+    const weightLogs = bodyLogs.filter(b => b.weight != null);
+    const calorieLogs = bodyLogs.filter(b => b.calories != null);
+    const latestWeight = weightLogs.length ? weightLogs[weightLogs.length-1].weight : null;
+    const firstWeight = weightLogs.length ? weightLogs[0].weight : null;
+    const weightDelta = (weightLogs.length > 1 && latestWeight != null && firstWeight != null) ? +(latestWeight - firstWeight).toFixed(1) : null;
+    const todayBody = getTodayBodyLog();
+    const todayCalories = todayBody && todayBody.calories != null ? todayBody.calories : null;
+    const todaySteps = todayBody && todayBody.steps != null ? todayBody.steps : null;
+
+    html += `<div class="tr-section-title">Body &amp; nutrition</div>`;
+    html += `
+      <div class="tr-body-entry-card">
+        <div class="tr-body-input-row">
+          <div class="tr-body-input-group">
+            <span class="tr-body-input-label">Weight</span>
+            <div class="tr-body-input-wrap">
+              <input inputmode="decimal" value="${escAttr(draft.weight)}" placeholder="0"
+                data-role="body-input" data-field="weight" />
+              <span class="tr-body-input-unit">lbs</span>
+            </div>
+          </div>
+          <div class="tr-body-input-group">
+            <span class="tr-body-input-label">Calories</span>
+            <div class="tr-body-input-wrap">
+              <input inputmode="numeric" value="${escAttr(draft.calories)}" placeholder="0"
+                data-role="body-input" data-field="calories" />
+              <span class="tr-body-input-unit">kcal</span>
+            </div>
+          </div>
+        </div>
+        <div class="tr-body-input-row">
+          <div class="tr-body-input-group">
+            <span class="tr-body-input-label">Steps</span>
+            <div class="tr-body-input-wrap">
+              <input inputmode="numeric" value="${escAttr(draft.steps)}" placeholder="0"
+                data-role="body-input" data-field="steps" />
+              <span class="tr-body-input-unit">steps</span>
+            </div>
+          </div>
+        </div>
+        <button class="tr-save-btn" data-action="save-body">Save today</button>
+      </div>
+    `;
+
+    // Daily calorie target — set once, then shows today's intake against it
+    const calDraft = state.draftCalorieTarget != null ? state.draftCalorieTarget : '';
+    if (state.calorieTarget != null) {
+      const remaining = todayCalories != null ? state.calorieTarget - todayCalories : null;
+      let calStatusClass = '';
+      let calStatusText = '';
+      if (todayCalories == null) {
+        calStatusText = 'Nothing logged yet today';
+      } else if (remaining >= 0) {
+        calStatusClass = 'tr-cal-under';
+        calStatusText = remaining + ' kcal remaining today';
+      } else {
+        calStatusClass = 'tr-cal-over';
+        calStatusText = Math.abs(remaining) + ' kcal over target';
+      }
+      html += `
+        <div class="tr-cal-target-card">
+          <div class="tr-cal-target-row">
+            <div>
+              <div class="tr-cal-target-num tr-display ${calStatusClass}">${todayCalories != null ? todayCalories : '—'}<span class="tr-cal-target-of"> / ${state.calorieTarget}</span></div>
+              <div class="tr-cal-target-status ${calStatusClass}">${calStatusText}</div>
+            </div>
+          </div>
+          <div class="tr-goal-editrow">
+            <input inputmode="numeric" value="${escAttr(calDraft)}" placeholder="Update target (kcal)"
+              data-role="cal-target-input" />
+            <button data-action="save-cal-target">Update</button>
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="tr-cal-target-card">
+          <div class="tr-goal-label" style="margin-bottom:10px;">Set a daily calorie target to see how today's tracking against it.</div>
+          <div class="tr-goal-editrow">
+            <input inputmode="numeric" value="${escAttr(calDraft)}" placeholder="Daily target (kcal)"
+              data-role="cal-target-input" />
+            <button data-action="save-cal-target">Save</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Daily step goal — set once, then shows today's steps against it
+    const stepDraft = state.draftStepGoal != null ? state.draftStepGoal : '';
+    if (state.stepGoal != null) {
+      const stepsRemaining = todaySteps != null ? state.stepGoal - todaySteps : null;
+      let stepStatusClass = '';
+      let stepStatusText = '';
+      if (todaySteps == null) {
+        stepStatusText = 'Nothing logged yet today';
+      } else if (stepsRemaining <= 0) {
+        stepStatusClass = 'tr-cal-under';
+        stepStatusText = 'Goal hit today \u2014 nice work';
+      } else {
+        stepStatusClass = 'tr-cal-over';
+        stepStatusText = stepsRemaining + ' steps to go today';
+      }
+      html += `
+        <div class="tr-cal-target-card">
+          <div class="tr-cal-target-row">
+            <div>
+              <div class="tr-cal-target-num tr-display ${stepStatusClass}">${todaySteps != null ? todaySteps : '\u2014'}<span class="tr-cal-target-of"> / ${state.stepGoal}</span></div>
+              <div class="tr-cal-target-status ${stepStatusClass}">${stepStatusText}</div>
+            </div>
+          </div>
+          <div class="tr-goal-editrow">
+            <input inputmode="numeric" value="${escAttr(stepDraft)}" placeholder="Update goal (steps)"
+              data-role="step-goal-input" />
+            <button data-action="save-step-goal">Update</button>
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="tr-cal-target-card">
+          <div class="tr-goal-label" style="margin-bottom:10px;">Set a daily step goal to see how today's tracking against it.</div>
+          <div class="tr-goal-editrow">
+            <input inputmode="numeric" value="${escAttr(stepDraft)}" placeholder="Daily goal (steps)"
+              data-role="step-goal-input" />
+            <button data-action="save-step-goal">Save</button>
+          </div>
+        </div>
+      `;
+    }
+
+    html += `
+      <div class="tr-pr-block">
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${latestWeight != null ? latestWeight + 'lbs' : '—'}</div>
+          <div class="tr-pr-label">Latest weight</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${weightDelta != null ? (weightDelta > 0 ? '+' : '') + weightDelta + 'lbs' : '—'}</div>
+          <div class="tr-pr-label">Since first log</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${todayCalories != null ? todayCalories : '—'}</div>
+          <div class="tr-pr-label">Today's calories</div>
+        </div>
+      </div>
+    `;
+
+    if (weightLogs.length >= 2) {
+      const recentW = weightLogs.slice(-8);
+      const wVals = recentW.map(b => b.weight);
+      const wMin = Math.min(...wVals), wMax = Math.max(...wVals);
+      const wRange = (wMax - wMin) || 1;
+      html += `
+        <div class="tr-chart-wrap">
+          <div class="tr-chart-title">Weight, last ${recentW.length} entries</div>
+          <div class="tr-bars">
+            ${recentW.map(b => {
+              const h = 20 + ((b.weight - wMin) / wRange) * 80;
+              return `
+                <div class="tr-bar-col">
+                  <span class="tr-bar-val">${b.weight}</span>
+                  <div class="tr-bar" style="height:${h}%"></div>
+                  <span class="tr-bar-date">${fmtDate(b.dateISO).replace(' ','')}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    if (calorieLogs.length >= 2) {
+      const recentC = calorieLogs.slice(-8);
+      const cMax = Math.max(...recentC.map(b => b.calories), 1);
+      html += `
+        <div class="tr-chart-wrap">
+          <div class="tr-chart-title">Calories, last ${recentC.length} days</div>
+          <div class="tr-bars">
+            ${recentC.map(b => {
+              const h = Math.max(6, (b.calories / cMax) * 100);
+              return `
+                <div class="tr-bar-col">
+                  <span class="tr-bar-val">${b.calories}</span>
+                  <div class="tr-bar" style="height:${h}%"></div>
+                  <span class="tr-bar-date">${fmtDate(b.dateISO).replace(' ','')}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // ---- Weekly consistency: training days per week, last 8 weeks ----
+    const weeks = lastNWeeks(8);
+    const weekCounts = weeks.map(w => trainingDaysInWeek(w));
+    const maxDays = Math.max(...weekCounts, 1);
+    const totalLoggedEver = state.logs.length;
+
+    html += `<div class="tr-section-title">Training days per week</div>`;
+    if (!totalLoggedEver) {
+      html += `<div class="tr-no-data">Log your first session and this fills in.</div>`;
+    } else {
+      html += `
+        <div class="tr-chart-wrap">
+          <div class="tr-bars">
+            ${weeks.map((w, i) => {
+              const count = weekCounts[i];
+              const h = Math.max(6, (count / maxDays) * 100);
+              const isCurrent = i === weeks.length - 1;
+              return `
+                <div class="tr-bar-col">
+                  <span class="tr-bar-val">${count || ''}</span>
+                  <div class="tr-bar ${isCurrent ? 'tr-bar-pr' : ''}" style="height:${h}%"></div>
+                  <span class="tr-bar-date">${weekLabel(w)}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // ---- Key lifts scorecard: PR + change since first log ----
+    const exerciseNames = [...new Set(state.logs.map(l => l.exerciseName))];
+    const scored = exerciseNames.map(name => {
+      const matches = state.logs.filter(l => l.exerciseName === name).sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+      const pr = getPR(name);
+      const first = topWeight(matches[0].sets);
+      const delta = pr.weight - first;
+      return { name, pr: pr.weight, delta, sessions: matches.length };
+    }).sort((a,b) => b.sessions - a.sessions).slice(0, 6);
+
+    html += `<div class="tr-section-title">Key lifts</div>`;
+    if (!scored.length) {
+      html += `<div class="tr-no-data">Your logged lifts will show here as personal bests, with how much they've moved since your first session.</div>`;
+    } else {
+      html += `<div class="tr-lift-grid">`;
+      scored.forEach(s => {
+        const deltaText = s.sessions > 1
+          ? (s.delta > 0 ? `+${s.delta}kg` : s.delta < 0 ? `${s.delta}kg` : 'Steady')
+          : 'First session';
+        const deltaClass = s.delta > 0 ? 'tr-delta-up' : s.delta < 0 ? 'tr-delta-down' : '';
+        html += `
+          <div class="tr-lift-card">
+            <div class="tr-lift-name">${s.name}</div>
+            <div class="tr-lift-val tr-display">${s.pr}kg</div>
+            <div class="tr-lift-delta ${deltaClass}">${deltaText}</div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+    }
+
+    // ---- Exercise trend deep-dive (pick one lift, see its session-by-session bars) ----
+    const allNames = new Set();
+    Object.values(state.programme).forEach(d => d.exercises.forEach(e => { if (!e.target.includes('min')) allNames.add(e.name); }));
+    const names = [...allNames];
+
+    html += `<div class="tr-section-title">Exercise trend</div>`;
+    html += `
+      <div class="tr-progress-pick">
+        ${names.map(n => `<button class="tr-pick-chip ${state.progressPick===n?'tr-active':''}" data-action="pick-progress" data-exercise="${escAttr(n)}">${n}</button>`).join('')}
+      </div>
+    `;
+
+    if (!state.progressPick) {
+      html += `<div class="tr-no-data">Pick a lift above to see its trend.</div>`;
+      return html;
+    }
+
+    const matches = state.logs.filter(l => l.exerciseName === state.progressPick).sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+    const pr = getPR(state.progressPick);
+    const latest = matches.length ? matches[matches.length-1] : null;
+
+    html += `
+      <div class="tr-pr-block">
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${pr ? pr.weight : '—'}${pr ? 'kg' : ''}</div>
+          <div class="tr-pr-label">Personal best</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${latest ? topWeight(latest.sets) : '—'}${latest ? 'kg' : ''}</div>
+          <div class="tr-pr-label">Last session</div>
+        </div>
+        <div class="tr-pr-item">
+          <div class="tr-pr-num tr-display">${matches.length}</div>
+          <div class="tr-pr-label">Sessions logged</div>
+        </div>
+      </div>
+    `;
+
+    if (!matches.length) {
+      html += `<div class="tr-no-data">No sessions logged for ${state.progressPick} yet.</div>`;
+      return html;
+    }
+
+    const recent = matches.slice(-8);
+    const maxW = Math.max(...recent.map(m => topWeight(m.sets)), 1);
+    const prWeight = pr ? pr.weight : 0;
+
+    html += `
+      <div class="tr-chart-wrap">
+        <div class="tr-chart-title">Top set, last ${recent.length} session${recent.length>1?'s':''}</div>
+        <div class="tr-bars">
+          ${recent.map(m => {
+            const w = topWeight(m.sets);
+            const h = Math.max(6, (w / maxW) * 100);
+            const isPR = w === prWeight && w > 0;
+            return `
+              <div class="tr-bar-col">
+                <span class="tr-bar-val">${w||''}</span>
+                <div class="tr-bar ${isPR?'tr-bar-pr':''}" style="height:${h}%"></div>
+                <span class="tr-bar-date">${fmtDate(m.dateISO).replace(' ','')}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+
+    return html;
+  }
+
+  // ---------------- RENDER: HISTORY ----------------
+  function renderHistory() {
+    let html = `
+      <div class="tr-topbar">
+        <span class="tr-week">HISTORY</span>
+      </div>
+      <div class="tr-hero" style="border-bottom:none; padding-bottom:8px;">
+        <h1 class="tr-display">Past Sessions</h1>
+      </div>
+    `;
+
+    if (!state.logs.length) {
+      html += `<div class="tr-no-data">Nothing logged yet. Start with today's session.</div>`;
+      return html;
+    }
+
+    const byDate = {};
+    state.logs.forEach(l => {
+      if (!byDate[l.dateISO]) byDate[l.dateISO] = [];
+      byDate[l.dateISO].push(l);
+    });
+    const dates = Object.keys(byDate).sort((a,b) => b.localeCompare(a));
+
+    dates.forEach(d => {
+      html += `<div class="tr-hist-day">
+        <div class="tr-hist-date">${fmtDate(d)} · ${DAY_SHORT[new Date(d+'T00:00:00').getDay()]}</div>`;
+      byDate[d].forEach(l => {
+        html += `<div class="tr-hist-card">
+          <div class="tr-hist-ex-name">${l.exerciseName}</div>
+          <div class="tr-hist-sets">${l.sets.map(s => s.weight+'kg×'+s.reps).join('  ·  ')}</div>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+
+    return html;
+  }
+
+  // ---------------- MAIN RENDER ----------------
+  function render() {
+    const root = document.getElementById('tr-root');
+    if (!state.loaded) {
+      root.innerHTML = `<div style="padding:60px 20px; text-align:center; color:#5A5E64; font-size:13px;">Loading…</div>`;
+      return;
+    }
+    let body = '';
+    if (state.view === 'today') body = renderToday();
+    else if (state.view === 'programme') body = renderProgramme();
+    else if (state.view === 'dashboard') body = renderDashboard();
+    else if (state.view === 'history') body = renderHistory();
+
+    root.innerHTML = `<div class="tr-brand">GYM TRACKER</div>` + body + `
+      <div id="tr-toast" class="tr-toast"></div>
+      <div class="tr-navbar">
+        <button class="tr-nav-btn ${state.view==='today'?'tr-active':''}" data-action="set-view" data-view="today">${ICONS.today}<span class="tr-nav-label">Today</span></button>
+        <button class="tr-nav-btn ${state.view==='programme'?'tr-active':''}" data-action="set-view" data-view="programme">${ICONS.programme}<span class="tr-nav-label">Programme</span></button>
+        <button class="tr-nav-btn ${state.view==='dashboard'?'tr-active':''}" data-action="set-view" data-view="dashboard">${ICONS.dashboard}<span class="tr-nav-label">Dashboard</span></button>
+        <button class="tr-nav-btn ${state.view==='history'?'tr-active':''}" data-action="set-view" data-view="history">${ICONS.history}<span class="tr-nav-label">History</span></button>
+      </div>
+    `;
+  }
+
+  // ---------------- EVENT DELEGATION ----------------
+  // A single click/input listener on the root, dispatching on data-action.
+  // This replaces per-element inline onclick/oninput handlers entirely, so
+  // no dynamic string (an exercise name, in particular) is ever interpolated
+  // into an HTML attribute that also needs to hold executable JS — the class
+  // of bug that broke every button when an exercise name collided with the
+  // attribute's own quote character.
+  const rootEl = document.getElementById('tr-root');
+
+  rootEl.addEventListener('click', function(e) {
+    const actionEl = e.target.closest('[data-action]');
+    if (!actionEl) return;
+    const action = actionEl.dataset.action;
+
+    if (action === 'open-exercise') {
+      openExercise(actionEl.dataset.exercise);
+    } else if (action === 'step') {
+      updateSet(actionEl.dataset.exercise, Number(actionEl.dataset.idx), actionEl.dataset.field, Number(actionEl.dataset.delta));
+    } else if (action === 'del-set') {
+      delSet(actionEl.dataset.exercise, Number(actionEl.dataset.idx));
+    } else if (action === 'add-set') {
+      addSet(actionEl.dataset.exercise);
+    } else if (action === 'save-exercise') {
+      saveExercise(actionEl.dataset.exercise);
+    } else if (action === 'set-view') {
+      setView(actionEl.dataset.view);
+    } else if (action === 'pick-progress') {
+      state.progressPick = actionEl.dataset.exercise;
+      render();
+    } else if (action === 'save-body') {
+      saveBodyLog();
+    } else if (action === 'save-goal') {
+      saveGoal();
+    } else if (action === 'save-cal-target') {
+      saveCalTarget();
+    } else if (action === 'save-step-goal') {
+      saveStepGoalTarget();
+    }
+  });
+
+  // Typing into a set's weight/reps field — deliberately does NOT re-render
+  // (see typeSet's comment above) so the on-screen keyboard and cursor
+  // position survive every keystroke on a real phone.
+  rootEl.addEventListener('input', function(e) {
+    const setInput = e.target.closest('[data-role="set-input"]');
+    if (setInput) {
+      typeSet(setInput.dataset.exercise, Number(setInput.dataset.idx), setInput.dataset.field, setInput.value);
+      return;
+    }
+    const bodyInput = e.target.closest('[data-role="body-input"]');
+    if (bodyInput) {
+      typeBody(bodyInput.dataset.field, bodyInput.value);
+      return;
+    }
+    const goalInput = e.target.closest('[data-role="goal-input"]');
+    if (goalInput) {
+      typeGoal(goalInput.value);
+      return;
+    }
+    const calTargetInput = e.target.closest('[data-role="cal-target-input"]');
+    if (calTargetInput) {
+      typeCalorieTarget(calTargetInput.value);
+      return;
+    }
+    const stepGoalInput = e.target.closest('[data-role="step-goal-input"]');
+    if (stepGoalInput) {
+      typeStepGoal(stepGoalInput.value);
+    }
+  });
+
+  loadAll();
+})();
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Gym Tracker</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gym Tracker">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#15171B">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%2315171B%27/%3E%3Ctext x=%2750%25%27 y=%2758%25%27 font-family=%27Arial,sans-serif%27 font-weight=%27800%27 font-size=%2748%27 fill=%27%23C9A15A%27 text-anchor=%27middle%27%3EGT%3C/text%3E%3C/svg%3E">
+
+<script>
+  if (!window.storage) {
+    const PREFIX = "gymtracker_";
+    window.storage = {
+      get: async (key) => {
+        const raw = localStorage.getItem(PREFIX + key);
+        if (raw === null) throw new Error("not found: " + key);
+        return { key, value: raw };
+      },
+      set: async (key, value) => {
+        localStorage.setItem(PREFIX + key, value);
+        return { key, value };
+      },
+      delete: async (key) => {
+        localStorage.removeItem(PREFIX + key);
+        return { key, deleted: true };
+      },
+      list: async (prefix) => {
+        const keys = Object.keys(localStorage)
+          .filter(k => k.startsWith(PREFIX + (prefix || "")))
+          .map(k => k.slice(PREFIX.length));
+        return { keys, prefix };
+      }
+    };
+  }
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; background: #15171B; }
+</style>
+</head>
+<body>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap');
+
+  #tr-root, #tr-root * { box-sizing: border-box; }
+  #tr-root {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #15171B;
+    color: #EDEAE2;
+    min-height: 100vh;
+    max-width: 480px;
+    margin: 0 auto;
+    position: relative;
+    padding-bottom: 84px;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  #tr-root .tr-display {
+    font-family: 'Bebas Neue', 'Inter', sans-serif;
+    letter-spacing: 0.02em;
+  }
+
+  /* ---------- top meta bar ---------- */
+  .tr-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 18px 20px 0;
+  }
+  .tr-topbar .tr-week {
+    font-size: 12px;
+    color: #8B8F94;
+    letter-spacing: 0.06em;
+  }
+  .tr-topbar .tr-date {
+    font-size: 12px;
+    color: #8B8F94;
+  }
+
+  /* ---------- hero (today) ---------- */
+  .tr-hero {
+    padding: 4px 20px 22px;
+    border-bottom: 1px solid #24272C;
+    margin-bottom: 18px;
+  }
+  .tr-hero-tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #4A6B4D;
+    background: rgba(74,107,77,0.16);
+    padding: 4px 9px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+  }
+  .tr-hero-tag.tr-rest { color: #8B8F94; background: rgba(139,143,148,0.14); }
+  .tr-hero-tag.tr-game { color: #C9A15A; background: rgba(201,161,90,0.16); }
+  .tr-hero h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 44px;
+    line-height: 0.95;
+    margin: 0 0 4px;
+    letter-spacing: 0.01em;
+  }
+  .tr-hero-sub {
+    font-size: 13px;
+    color: #8B8F94;
+    margin: 0;
+  }
+
+  /* ---------- section label ---------- */
+  .tr-section-label {
+    font-size: 12px;
+    color: #8B8F94;
+    padding: 0 20px;
+    margin: 22px 0 10px;
+  }
+
+  /* ---------- brand mark ---------- */
+  .tr-brand {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #4A4E54;
+    padding: 14px 20px 0;
+  }
+
+  /* ---------- dashboard section titles ---------- */
+  .tr-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #EDEAE2;
+    padding: 0 14px;
+    margin: 24px 0 10px;
+  }
+  .tr-section-title:first-of-type { margin-top: 4px; }
+
+  /* ---------- key lifts scorecard ---------- */
+  .tr-lift-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 0 14px 4px;
+  }
+  .tr-lift-card {
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .tr-lift-name {
+    font-size: 12px;
+    color: #8B8F94;
+    margin-bottom: 8px;
+    line-height: 1.3;
+    min-height: 31px;
+  }
+  .tr-lift-val {
+    font-size: 26px;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .tr-lift-delta {
+    font-size: 11.5px;
+    color: #6A6E74;
+    font-weight: 600;
+  }
+  .tr-lift-delta.tr-delta-up { color: #7A9D7D; }
+  .tr-lift-delta.tr-delta-down { color: #B5766A; }
+
+  /* ---------- exercise rows ---------- */
+  .tr-ex-list { padding: 0 14px; }
+  .tr-ex-card {
+    background: #1E2125;
+    border-radius: 10px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    border: 1px solid #262A2F;
+  }
+  .tr-ex-row {
+    display: flex;
+    align-items: center;
+    padding: 14px 14px;
+    cursor: pointer;
+    gap: 12px;
+  }
+  .tr-ex-check {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 2px solid #3A3E44;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tr-ex-check.tr-done {
+    background: #4A6B4D;
+    border-color: #4A6B4D;
+  }
+  .tr-ex-check.tr-done::after {
+    content: '✓';
+    color: #EDEAE2;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .tr-ex-info { flex: 1; min-width: 0; }
+  .tr-ex-name {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+  .tr-ex-target {
+    font-size: 12.5px;
+    color: #8B8F94;
+  }
+  .tr-ex-lastweight {
+    font-size: 13px;
+    color: #C9A15A;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tr-ex-chevron {
+    color: #5A5E64;
+    font-size: 18px;
+    transform: rotate(90deg);
+    transition: transform 0.15s;
+  }
+  .tr-ex-chevron.tr-open { transform: rotate(270deg); }
+
+  /* ---------- expanded set logger ---------- */
+  .tr-log-panel {
+    padding: 4px 14px 16px;
+    border-top: 1px solid #262A2F;
+  }
+  .tr-set-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .tr-set-num {
+    width: 20px;
+    font-size: 13px;
+    color: #5A5E64;
+    font-weight: 700;
+  }
+  .tr-stepper {
+    display: flex;
+    align-items: center;
+    background: #15171B;
+    border-radius: 8px;
+    border: 1px solid #2A2E33;
+    flex: 1;
+  }
+  .tr-stepper button {
+    background: none;
+    border: none;
+    color: #C9A15A;
+    font-size: 18px;
+    width: 38px;
+    height: 38px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tr-stepper input {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #EDEAE2;
+    font-size: 15px;
+    font-weight: 700;
+    text-align: center;
+    width: 100%;
+    font-family: 'Inter', sans-serif;
+  }
+  .tr-stepper input:focus { outline: none; }
+  .tr-stepper-label {
+    font-size: 10px;
+    color: #5A5E64;
+    display: block;
+    text-align: center;
+    margin-top: 2px;
+  }
+  .tr-set-x { color: #5A5E64; font-size: 13px; }
+  .tr-set-del {
+    background: none; border: none; color: #5A5E64; font-size: 18px; cursor: pointer; padding: 4px 6px;
+  }
+  .tr-add-set {
+    width: 100%;
+    background: none;
+    border: 1px dashed #333740;
+    color: #8B8F94;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 13px;
+    margin-top: 8px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tr-save-btn {
+    width: 100%;
+    background: #C9A15A;
+    border: none;
+    color: #15171B;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 14px;
+    margin-top: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tr-save-btn:active { opacity: 0.85; }
+  .tr-save-btn.tr-saved { background: #4A6B4D; color: #EDEAE2; }
+
+  /* ---------- body & nutrition entry card ---------- */
+  .tr-body-entry-card {
+    margin: 0 14px 14px;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .tr-body-input-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .tr-body-input-group {
+    flex: 1;
+  }
+  .tr-body-input-label {
+    display: block;
+    font-size: 11px;
+    color: #8B8F94;
+    margin-bottom: 6px;
+  }
+  .tr-body-input-wrap {
+    display: flex;
+    align-items: center;
+    background: #15171B;
+    border: 1px solid #2A2E33;
+    border-radius: 8px;
+    padding: 0 12px;
+  }
+  .tr-body-input-wrap input {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #EDEAE2;
+    font-size: 17px;
+    font-weight: 700;
+    padding: 12px 0;
+    width: 100%;
+    font-family: 'Inter', sans-serif;
+  }
+  .tr-body-input-wrap input:focus { outline: none; }
+  .tr-body-input-unit {
+    font-size: 12px;
+    color: #5A5E64;
+  }
+
+  /* ---------- goal card ---------- */
+  .tr-goal-card {
+    margin: 0 14px 14px;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .tr-goal-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 12px;
+  }
+  .tr-goal-num {
+    font-size: 32px;
+    line-height: 1;
+    color: #C9A15A;
+  }
+  .tr-goal-label {
+    font-size: 12px;
+    color: #8B8F94;
+    margin-top: 4px;
+  }
+  .tr-goal-target {
+    font-size: 12.5px;
+    color: #8B8F94;
+  }
+  .tr-goal-bar-track {
+    height: 8px;
+    background: #15171B;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .tr-goal-bar-fill {
+    height: 100%;
+    background: #C9A15A;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }
+  .tr-countdown-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .tr-countdown-stat {
+    flex: 1;
+    text-align: center;
+    background: #15171B;
+    border-radius: 10px;
+    padding: 16px 8px;
+  }
+  .tr-countdown-num {
+    font-size: 42px;
+    line-height: 1;
+    color: #C9A15A;
+  }
+  .tr-countdown-num.tr-countdown-lost {
+    color: #7A9D7D;
+  }
+  .tr-countdown-msg {
+    text-align: center;
+    font-size: 14px;
+    font-weight: 700;
+    color: #C9A15A;
+    margin-bottom: 16px;
+  }
+  .tr-cal-target-card {
+    margin: 0 14px 14px;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .tr-cal-target-row { margin-bottom: 12px; }
+  .tr-cal-target-num {
+    font-size: 30px;
+    line-height: 1;
+    color: #EDEAE2;
+  }
+  .tr-cal-target-of {
+    font-size: 16px;
+    color: #5A5E64;
+  }
+  .tr-cal-target-status {
+    font-size: 12.5px;
+    color: #8B8F94;
+    margin-top: 4px;
+  }
+  .tr-cal-target-num.tr-cal-under, .tr-cal-target-status.tr-cal-under { color: #7A9D7D; }
+  .tr-cal-target-num.tr-cal-over, .tr-cal-target-status.tr-cal-over { color: #B5766A; }
+  .tr-goal-editrow {
+    display: flex;
+    gap: 8px;
+  }
+  .tr-goal-editrow input {
+    flex: 1;
+    background: #15171B;
+    border: 1px solid #2A2E33;
+    border-radius: 8px;
+    color: #EDEAE2;
+    font-size: 14px;
+    padding: 10px 12px;
+    font-family: 'Inter', sans-serif;
+  }
+  .tr-goal-editrow input:focus { outline: none; border-color: #3A3E44; }
+  .tr-goal-editrow button {
+    background: #262A2F;
+    border: 1px solid #333740;
+    color: #EDEAE2;
+    border-radius: 8px;
+    padding: 0 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  /* ---------- rest / game states ---------- */
+  .tr-empty-state {
+    padding: 40px 24px 20px;
+    text-align: center;
+  }
+  .tr-empty-state .tr-emoji-mark {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    color: #3A3E44;
+    margin-bottom: 8px;
+  }
+  .tr-empty-state p {
+    color: #8B8F94;
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  /* ---------- programme view ---------- */
+  .tr-week-list { padding: 8px 14px; }
+  .tr-day-card {
+    background: #1E2125;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    border: 1px solid #262A2F;
+  }
+  .tr-day-card.tr-today-card { border-color: #C9A15A; }
+  .tr-day-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .tr-day-name {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 18px;
+    letter-spacing: 0.03em;
+  }
+  .tr-day-session {
+    font-size: 12px;
+    color: #8B8F94;
+  }
+  .tr-day-exlist {
+    font-size: 12.5px;
+    color: #6A6E74;
+    line-height: 1.6;
+    margin-top: 4px;
+  }
+
+  /* ---------- progress view ---------- */
+  .tr-progress-pick {
+    display: flex;
+    gap: 8px;
+    padding: 0 14px 14px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tr-progress-pick::-webkit-scrollbar { display: none; }
+  .tr-pick-chip {
+    flex-shrink: 0;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    color: #8B8F94;
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tr-pick-chip.tr-active {
+    background: #C9A15A;
+    color: #15171B;
+    border-color: #C9A15A;
+  }
+  .tr-pr-block {
+    margin: 0 14px 18px;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 18px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .tr-pr-item { text-align: left; }
+  .tr-pr-num {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 30px;
+    color: #C9A15A;
+    line-height: 1;
+  }
+  .tr-pr-label {
+    font-size: 11px;
+    color: #8B8F94;
+    margin-top: 4px;
+  }
+  .tr-chart-wrap {
+    margin: 0 14px 18px;
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 18px 14px 14px;
+  }
+  .tr-chart-title {
+    font-size: 12px;
+    color: #8B8F94;
+    margin-bottom: 14px;
+  }
+  .tr-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 120px;
+  }
+  .tr-bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+  }
+  .tr-bar {
+    width: 100%;
+    max-width: 26px;
+    background: #3A4A3B;
+    border-radius: 3px 3px 0 0;
+    position: relative;
+    min-height: 3px;
+  }
+  .tr-bar.tr-bar-pr { background: #C9A15A; }
+  .tr-bar-val {
+    font-size: 10px;
+    color: #8B8F94;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+  .tr-bar-date {
+    font-size: 9.5px;
+    color: #5A5E64;
+    margin-top: 6px;
+  }
+  .tr-no-data {
+    text-align: center;
+    padding: 30px 20px;
+    color: #5A5E64;
+    font-size: 13px;
+  }
+
+  /* ---------- history view ---------- */
+  .tr-hist-day {
+    padding: 0 14px;
+    margin-bottom: 18px;
+  }
+  .tr-hist-date {
+    font-size: 12px;
+    color: #8B8F94;
+    padding: 0 6px 8px;
+  }
+  .tr-hist-card {
+    background: #1E2125;
+    border: 1px solid #262A2F;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 6px;
+  }
+  .tr-hist-ex-name {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .tr-hist-sets {
+    font-size: 12.5px;
+    color: #8B8F94;
+  }
+
+  /* ---------- bottom nav ---------- */
+  .tr-navbar {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 480px;
+    background: #1A1C20;
+    border-top: 1px solid #26292E;
+    display: flex;
+    padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+    z-index: 20;
+  }
+  .tr-nav-btn {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #5A5E64;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 4px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tr-nav-btn.tr-active { color: #C9A15A; }
+  .tr-nav-icon { width: 20px; height: 20px; }
+  .tr-nav-label { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
+
+  .tr-toast {
+    position: fixed;
+    bottom: 90px;
+    left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    background: #EDEAE2;
+    color: #15171B;
+    padding: 10px 18px;
+    border-radius: 24px;
+    font-size: 13px;
+    font-weight: 600;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.25s ease;
+    max-width: 480px;
+    white-space: nowrap;
+    z-index: 30;
+  }
+  .tr-toast.tr-show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+
+<div id="tr-root"></div>
+
+<script>
+(function() {
+
+  // ---------------- DATA MODEL ----------------
+  const DAY_NAMES = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
+  const DAY_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  const DEFAULT_PROGRAMME = {
+    0: { session: 'Rest', type: 'rest', exercises: [] },
     1: { session: 'Training Day', type: 'train', exercises: [] },
     2: { session: 'Training Day', type: 'train', exercises: [] },
     3: { session: 'Training Day', type: 'train', exercises: [] },
